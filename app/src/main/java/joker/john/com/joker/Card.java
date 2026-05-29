@@ -1,10 +1,14 @@
 package joker.john.com.joker;
 
+import java.io.Serializable;
+
 /**
  * Created by liweifeng on 16/03/2018.
  */
 
-public class Card {
+public class Card implements Serializable {
+    private static final long serialVersionUID = 1L;
+
     private int value;
 //    private int color;
     private CardColor color;

@@ -26,6 +26,7 @@ public class JokerMainActivity extends AppCompatActivity  {
             switch (index) {
                 case 0:
                     gotoGame();
+                    break;
                 case 1:
                     break;
                 case 2:
