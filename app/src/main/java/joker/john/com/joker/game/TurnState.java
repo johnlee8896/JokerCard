@@ -2,6 +2,12 @@ package joker.john.com.joker.game;
 
 import java.io.Serializable;
 
+/**
+ * 当前牌墩的轮转状态。
+ * 创建时间：2026-06-02
+ * 最近修改：2026-06-02
+ * by john
+ */
 public class TurnState implements Serializable {
     private static final long serialVersionUID = 1L;
 

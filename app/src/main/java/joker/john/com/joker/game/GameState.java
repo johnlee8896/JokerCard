@@ -2,9 +2,16 @@ package joker.john.com.joker.game;
 
 import java.io.Serializable;
 import java.util.ArrayList;
+import java.util.HashMap;
 
 import joker.john.com.joker.Card;
 
+/**
+ * 单局双升运行时状态。
+ * 创建时间：2026-06-02
+ * 最近修改：2026-06-02
+ * by john
+ */
 public class GameState implements Serializable {
     private static final long serialVersionUID = 1L;
 
@@ -26,6 +33,16 @@ public class GameState implements Serializable {
     private GamePhase phase = GamePhase.REVEAL_TRUMP;
     private boolean roundFinished;
     private String statusMessage = "";
+    private int kittyBasePoints;
+    private int kittyMultiplier = 1;
+    private int kittyBonusPoints;
+    private int lastTrickWinner = -1;
+    private String kittyWinTypeLabel = "";
+    private String roundSettlementSummary = "";
+    private int lastRevealPlayer = -1;
+    private String lastRevealSummary = "";
+    private final ArrayList<Card> lastRevealCards = new ArrayList<>();
+    private final ArrayList<Card> publicRevealCards = new ArrayList<>();
 
     @SuppressWarnings("unchecked")
     public GameState(RuleConfig ruleConfig) {
@@ -146,5 +163,108 @@ public class GameState implements Serializable {
 
     public void setStatusMessage(String statusMessage) {
         this.statusMessage = statusMessage;
+    }
+
+    public int getKittyBasePoints() {
+        return kittyBasePoints;
+    }
+
+    public void setKittyBasePoints(int kittyBasePoints) {
+        this.kittyBasePoints = kittyBasePoints;
+    }
+
+    public int getKittyMultiplier() {
+        return kittyMultiplier;
+    }
+
+    public void setKittyMultiplier(int kittyMultiplier) {
+        this.kittyMultiplier = kittyMultiplier;
+    }
+
+    public int getKittyBonusPoints() {
+        return kittyBonusPoints;
+    }
+
+    public void setKittyBonusPoints(int kittyBonusPoints) {
+        this.kittyBonusPoints = kittyBonusPoints;
+    }
+
+    public int getLastTrickWinner() {
+        return lastTrickWinner;
+    }
+
+    public void setLastTrickWinner(int lastTrickWinner) {
+        this.lastTrickWinner = lastTrickWinner;
+    }
+
+    public String getKittyWinTypeLabel() {
+        return kittyWinTypeLabel;
+    }
+
+    public void setKittyWinTypeLabel(String kittyWinTypeLabel) {
+        this.kittyWinTypeLabel = kittyWinTypeLabel;
+    }
+
+    public String getRoundSettlementSummary() {
+        return roundSettlementSummary;
+    }
+
+    public void setRoundSettlementSummary(String roundSettlementSummary) {
+        this.roundSettlementSummary = roundSettlementSummary;
+    }
+
+    public int getLastRevealPlayer() {
+        return lastRevealPlayer;
+    }
+
+    public void setLastRevealPlayer(int lastRevealPlayer) {
+        this.lastRevealPlayer = lastRevealPlayer;
+    }
+
+    public String getLastRevealSummary() {
+        return lastRevealSummary;
+    }
+
+    public void setLastRevealSummary(String lastRevealSummary) {
+        this.lastRevealSummary = lastRevealSummary;
+    }
+
+    public ArrayList<Card> getLastRevealCards() {
+        return lastRevealCards;
+    }
+
+    public ArrayList<Card> getPublicRevealCards() {
+        return publicRevealCards;
+    }
+
+    /**
+     * 汇总当前局里已经公开的所有牌，供半甩和 AI 做公开信息判断。
+     */
+    public ArrayList<Card> buildPublicCards() {
+        ArrayList<Card> publicCards = new ArrayList<>();
+        for (PlayedTrick trick : completedTricks) {
+            for (PlayedHand playedHand : trick.getPlays()) {
+                publicCards.addAll(playedHand.getCards());
+            }
+        }
+        for (PlayedHand playedHand : currentTrick) {
+            publicCards.addAll(playedHand.getCards());
+        }
+        publicCards.addAll(publicRevealCards);
+        return publicCards;
+    }
+
+    /**
+     * 按牌值和花色统计公开牌张数。
+     */
+    public HashMap<String, Integer> buildPublicCardCountMap() {
+        HashMap<String, Integer> counts = new HashMap<>();
+        for (Card card : buildPublicCards()) {
+            String key = card.getValue() + "_" + card.getColor().name();
+            Integer count = counts.get(key);
+            int next = count == null ? 1 : count + 1;
+            counts.put(key, Math.min(2, next));
+        }
+        return counts;
     }
 }

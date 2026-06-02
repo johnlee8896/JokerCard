@@ -10,6 +10,7 @@ public class PlayPattern implements Serializable {
         SINGLE,
         PAIR,
         TRACTOR,
+        SHUAI,
         MIXED
     }
 
@@ -58,6 +59,6 @@ public class PlayPattern implements Serializable {
     }
 
     public boolean canBeatLead() {
-        return type == Type.SINGLE || type == Type.PAIR || type == Type.TRACTOR;
+        return type == Type.SINGLE || type == Type.PAIR || type == Type.TRACTOR || type == Type.SHUAI;
     }
 }

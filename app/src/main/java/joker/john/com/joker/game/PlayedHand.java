@@ -6,6 +6,12 @@ import java.util.List;
 
 import joker.john.com.joker.Card;
 
+/**
+ * 单家一次出牌记录。
+ * 创建时间：2026-06-02
+ * 最近修改：2026-06-02
+ * by john
+ */
 public class PlayedHand implements Serializable {
     private static final long serialVersionUID = 1L;
 

@@ -26,7 +26,7 @@ import joker.john.com.joker.game.RuleConfig;
 import joker.john.com.joker.game.SimpleShengJiGame;
 
 public class GameView extends View {
-    private static final int SETTING_ROW_COUNT = 5;
+    private static final int SETTING_ROW_COUNT = 15;
     private static final int MAX_HAND_ROWS = 2;
 
     private final SparseArray<Bitmap> cardBitmapCache = new SparseArray<>();
@@ -34,10 +34,13 @@ public class GameView extends View {
     private final ArrayList<Rect> handCardRects = new ArrayList<>();
     private final Rect playButtonRect = new Rect();
     private final Rect restartButtonRect = new Rect();
+    private final Rect undoButtonRect = new Rect();
     private final Rect hintButtonRect = new Rect();
     private final Rect historyButtonRect = new Rect();
     private final Rect settingsButtonRect = new Rect();
     private final Rect menuButtonRect = new Rect();
+    private final Rect revealNoticeRect = new Rect();
+    private final Rect revealNoticeConfirmRect = new Rect();
     private final Rect overlayCloseRect = new Rect();
     private final Rect overlaySaveRect = new Rect();
     private final Rect overlayCancelRect = new Rect();
@@ -75,6 +78,9 @@ public class GameView extends View {
     private SimpleShengJiGame game;
     private boolean showHistoryPanel;
     private boolean showSettingsPanel;
+    private boolean showSettlementPanel;
+    private boolean showRestartConfirmPanel;
+    private boolean settlementPanelShownForRound;
     private String selectionFeedbackMessage = "";
     private boolean selectionFeedbackIsError;
     private float historyScrollOffset;
@@ -84,6 +90,9 @@ public class GameView extends View {
     private boolean toolMenuExpanded;
     private int dealVisibleCount;
     private boolean dealAnimating;
+    private boolean showRevealNotice;
+    private String revealNoticeSummary = "";
+    private final ArrayList<Card> revealNoticeCards = new ArrayList<>();
 
     private final Runnable dealAnimationRunnable = new Runnable() {
         @Override
@@ -114,6 +123,7 @@ public class GameView extends View {
                 return;
             }
             game.playNextAiTurn();
+            syncRevealNoticeFromGame();
             invalidate();
             scheduleNextAction();
         }
@@ -140,10 +150,24 @@ public class GameView extends View {
             selectedIndexes.clear();
             selectionFeedbackMessage = "";
             selectionFeedbackIsError = false;
+            settlementPanelShownForRound = false;
             game.startNextRound();
             beginDealAnimation();
+            syncRevealNoticeFromGame();
             invalidate();
             scheduleNextAction();
+        }
+    };
+
+    private final Runnable dismissSettlementRunnable = new Runnable() {
+        @Override
+        public void run() {
+            if (!showSettlementPanel) {
+                return;
+            }
+            showSettlementPanel = false;
+            invalidate();
+            postDelayed(nextRoundRunnable, 700);
         }
     };
 
@@ -205,6 +229,7 @@ public class GameView extends View {
         subtleTextPaint.setTextSize(20f);
 
         beginDealAnimation();
+        syncRevealNoticeFromGame();
     }
 
     @Override
@@ -217,11 +242,18 @@ public class GameView extends View {
         drawPhaseSummary(canvas);
         drawButtons(canvas);
         drawHand(canvas);
+        drawRevealNotice(canvas);
         if (showHistoryPanel) {
             drawHistoryOverlay(canvas);
         }
         if (showSettingsPanel) {
             drawSettingsOverlay(canvas);
+        }
+        if (showSettlementPanel) {
+            drawSettlementOverlay(canvas);
+        }
+        if (showRestartConfirmPanel) {
+            drawRestartConfirmOverlay(canvas);
         }
     }
 
@@ -238,6 +270,20 @@ public class GameView extends View {
             handleOverlayTouch(event, false);
             return true;
         }
+        if (showSettlementPanel) {
+            handleSettlementTouch(event);
+            return true;
+        }
+        if (showRestartConfirmPanel) {
+            handleRestartConfirmTouch(event);
+            return true;
+        }
+        if (showRevealNotice && event.getAction() == MotionEvent.ACTION_UP && revealNoticeConfirmRect.contains(x, y)) {
+            performClick();
+            showRevealNotice = false;
+            invalidate();
+            return true;
+        }
         if (dealAnimating) {
             return true;
         }
@@ -248,7 +294,13 @@ public class GameView extends View {
         performClick();
 
         if (restartButtonRect.contains(x, y)) {
-            restartGame();
+            showRestartConfirmPanel = true;
+            toolMenuExpanded = false;
+            invalidate();
+            return true;
+        }
+        if (undoButtonRect.contains(x, y)) {
+            handleUndoClick();
             return true;
         }
         if (playButtonRect.contains(x, y)) {
@@ -301,6 +353,7 @@ public class GameView extends View {
         removeCallbacks(nextTrickRunnable);
         removeCallbacks(nextRoundRunnable);
         removeCallbacks(dealAnimationRunnable);
+        removeCallbacks(dismissSettlementRunnable);
         super.onDetachedFromWindow();
     }
 
@@ -327,11 +380,16 @@ public class GameView extends View {
         }
         selectedIndexes.clear();
         if (phaseBeforeAction == GamePhase.REVEAL_TRUMP) {
-            setSelectionFeedback("亮主成功。", false);
+            String revealMessage = game.getLastRevealSummary();
+            setSelectionFeedback(revealMessage.length() > 0 ? revealMessage : "亮主成功。", false);
+            syncRevealNoticeFromGame();
         } else if (phaseBeforeAction == GamePhase.BURY_KITTY) {
-            setSelectionFeedback("底牌已放好。", false);
+            setSelectionFeedback(result.message == null || result.message.length() == 0 ? "底牌已放好。" : result.message, false);
         } else {
-            setSelectionFeedback("出牌成功。", false);
+            String successMessage = result.message == null || result.message.length() == 0
+                    ? "出牌成功。"
+                    : result.message;
+            setSelectionFeedback(successMessage, false);
         }
         invalidate();
         scheduleNextAction();
@@ -341,6 +399,7 @@ public class GameView extends View {
         if (game.getPhase() == GamePhase.REVEAL_TRUMP && game.canHumanUsePrimaryAction()) {
             SimpleShengJiGame.MoveResult passResult = game.passHumanReveal();
             setSelectionFeedback(passResult.success ? "这次先不抢亮，继续看其他人。" : passResult.message, !passResult.success);
+            syncRevealNoticeFromGame();
             invalidate();
             scheduleNextAction();
             return;
@@ -357,6 +416,16 @@ public class GameView extends View {
         invalidate();
     }
 
+    private void handleUndoClick() {
+        SimpleShengJiGame.MoveResult result = game.undoHumanMove();
+        setSelectionFeedback(result.message, !result.success);
+        if (result.success) {
+            selectedIndexes.clear();
+        }
+        invalidate();
+        scheduleNextAction();
+    }
+
     private void restartGame() {
         removeCallbacks(aiTurnRunnable);
         removeCallbacks(nextTrickRunnable);
@@ -365,12 +434,20 @@ public class GameView extends View {
         game = new SimpleShengJiGame(pendingRuleConfig.copy());
         showHistoryPanel = false;
         showSettingsPanel = false;
+        showSettlementPanel = false;
+        showRestartConfirmPanel = false;
+        settlementPanelShownForRound = false;
         toolMenuExpanded = false;
         selectionFeedbackMessage = "";
         selectionFeedbackIsError = false;
         historyScrollOffset = 0f;
         settingsScrollOffset = 0f;
+        showRevealNotice = false;
+        revealNoticeSummary = "";
+        revealNoticeCards.clear();
+        removeCallbacks(dismissSettlementRunnable);
         beginDealAnimation();
+        syncRevealNoticeFromGame();
         invalidate();
         scheduleNextAction();
     }
@@ -383,18 +460,42 @@ public class GameView extends View {
         if (dealAnimating) {
             return;
         }
-        if (showAnyOverlay()) {
+        if (game.shouldAutoStartNextRound()) {
+            if (!settlementPanelShownForRound) {
+                settlementPanelShownForRound = true;
+                showSettlementPanel = true;
+                invalidate();
+                removeCallbacks(dismissSettlementRunnable);
+                int delaySeconds = pendingRuleConfig.getSettlementDelaySeconds();
+                if (delaySeconds > 0) {
+                    postDelayed(dismissSettlementRunnable, delaySeconds * 1000L);
+                }
+                return;
+            }
+            if (showSettlementPanel) {
+                return;
+            }
+            postDelayed(nextRoundRunnable, 700);
             return;
         }
-        if (game.shouldAutoStartNextRound()) {
-            postDelayed(nextRoundRunnable, 2600);
+        if (showAnyOverlay()) {
             return;
         }
         if (game.hasPendingTrickResolution()) {
             postDelayed(nextTrickRunnable, 1300);
             return;
         }
-        if (!game.isHumanTurn() || game.getPhase() == GamePhase.REVEAL_TRUMP || game.getPhase() == GamePhase.BURY_KITTY) {
+        if (game.getPhase() == GamePhase.REVEAL_TRUMP) {
+            if (game.canHumanUsePrimaryAction()) {
+                return;
+            }
+            postDelayed(aiTurnRunnable, 520);
+            return;
+        }
+        if (game.getPhase() == GamePhase.BURY_KITTY && game.canHumanUsePrimaryAction()) {
+            return;
+        }
+        if (!game.isHumanTurn() || game.getPhase() == GamePhase.BURY_KITTY) {
             postDelayed(aiTurnRunnable, 700);
         }
     }
@@ -502,7 +603,7 @@ public class GameView extends View {
     }
 
     private boolean showAnyOverlay() {
-        return showHistoryPanel || showSettingsPanel;
+        return showHistoryPanel || showSettingsPanel || showSettlementPanel || showRestartConfirmPanel;
     }
 
     private void cycleSetting(int rowIndex, boolean forward) {
@@ -531,7 +632,47 @@ public class GameView extends View {
             editingRuleConfig.setHistoryLimit(history);
             return;
         }
-        editingRuleConfig.setHintEnabled(!editingRuleConfig.isHintEnabled());
+        if (rowIndex == 4) {
+            editingRuleConfig.setHintEnabled(!editingRuleConfig.isHintEnabled());
+            return;
+        }
+        if (rowIndex == 5) {
+            editingRuleConfig.setRevealStealEnabled(!editingRuleConfig.isRevealStealEnabled());
+            return;
+        }
+        if (rowIndex == 6) {
+            editingRuleConfig.setSpecialThreeCardShuaiEnabled(!editingRuleConfig.isSpecialThreeCardShuaiEnabled());
+            return;
+        }
+        if (rowIndex == 7) {
+            editingRuleConfig.setTractorCarryAceEnabled(!editingRuleConfig.isTractorCarryAceEnabled());
+            return;
+        }
+        if (rowIndex == 8) {
+            editingRuleConfig.setSpecialTopSplitEnabled(!editingRuleConfig.isSpecialTopSplitEnabled());
+            return;
+        }
+        if (rowIndex == 9) {
+            editingRuleConfig.setPublicInfoSemiShuaiEnabled(!editingRuleConfig.isPublicInfoSemiShuaiEnabled());
+            return;
+        }
+        if (rowIndex == 10) {
+            editingRuleConfig.setCounterTrumpSingleJokerPairEnabled(!editingRuleConfig.isCounterTrumpSingleJokerPairEnabled());
+            return;
+        }
+        if (rowIndex == 11) {
+            editingRuleConfig.setCounterTrumpDoubleJokerCopyEnabled(!editingRuleConfig.isCounterTrumpDoubleJokerCopyEnabled());
+            return;
+        }
+        if (rowIndex == 12) {
+            editingRuleConfig.setCounterNoTrumpEnabled(!editingRuleConfig.isCounterNoTrumpEnabled());
+            return;
+        }
+        if (rowIndex == 13) {
+            editingRuleConfig.setSettlementDelaySeconds(nextSettlementDelaySeconds(editingRuleConfig.getSettlementDelaySeconds(), forward));
+            return;
+        }
+        editingRuleConfig.setUndoChancesPerRound(nextUndoChances(editingRuleConfig.getUndoChancesPerRound(), forward));
     }
 
     private int nextRankValue(int current, boolean forward) {
@@ -572,6 +713,44 @@ public class GameView extends View {
         return suits[nextIndex];
     }
 
+    private int nextSettlementDelaySeconds(int current, boolean forward) {
+        int[] values = RuleConfig.AVAILABLE_SETTLEMENT_DELAY_SECONDS;
+        int currentIndex = 0;
+        for (int i = 0; i < values.length; i++) {
+            if (values[i] == current) {
+                currentIndex = i;
+                break;
+            }
+        }
+        int nextIndex = forward ? currentIndex + 1 : currentIndex - 1;
+        if (nextIndex >= values.length) {
+            nextIndex = 0;
+        }
+        if (nextIndex < 0) {
+            nextIndex = values.length - 1;
+        }
+        return values[nextIndex];
+    }
+
+    private int nextUndoChances(int current, boolean forward) {
+        int[] values = RuleConfig.AVAILABLE_UNDO_CHANCES;
+        int currentIndex = 0;
+        for (int i = 0; i < values.length; i++) {
+            if (values[i] == current) {
+                currentIndex = i;
+                break;
+            }
+        }
+        int nextIndex = forward ? currentIndex + 1 : currentIndex - 1;
+        if (nextIndex >= values.length) {
+            nextIndex = 0;
+        }
+        if (nextIndex < 0) {
+            nextIndex = values.length - 1;
+        }
+        return values[nextIndex];
+    }
+
     private void drawBackground(Canvas canvas) {
         Rect dest = new Rect(0, 0, getWidth(), getHeight());
         canvas.drawBitmap(backgroundBitmap, null, dest, null);
@@ -585,8 +764,8 @@ public class GameView extends View {
         float totalWidth = getBoardRight() - 64f;
         canvas.drawText("双升单机", 32, 44, smallPaint);
         canvas.drawText(trimTextToWidth(trumpText + "  " + dealerText, totalWidth - 120f), 150, 44, smallPaint);
-        String secondLine = "第 " + game.getRoundNumber() + " 局 / 第 " + game.getTrickNumber() + " 墩  我方 " + game.getUsScore()
-                + " 分  对方 " + game.getThemScore() + " 分  " + getPhaseTitle() + "  " + getTopSelectionText();
+        String secondLine = "第 " + game.getRoundNumber() + " 局 / 第 " + game.getTrickNumber() + " 墩  "
+                + game.getDefenderScoreLabel() + "  " + game.getNextDealerLabel() + "  " + getTopSelectionText();
         canvas.drawText(trimTextToWidth(secondLine, totalWidth), 32, 76, selectionFeedbackIsError ? bodyPaint : hintPaint);
         drawSidebar(canvas);
     }
@@ -688,6 +867,40 @@ public class GameView extends View {
 
     private void drawButtons(Canvas canvas) {
         // Selection text has been folded into the top header to free more table space.
+    }
+
+    private void drawRevealNotice(Canvas canvas) {
+        if (!showRevealNotice) {
+            return;
+        }
+
+        int panelWidth = Math.min(getBoardRight() - 44, Math.max(520, getBoardRight() - 96));
+        int left = Math.max(22, (getBoardRight() - panelWidth) / 2);
+        int top = 88;
+        int right = left + panelWidth;
+        int bottom = top + 214;
+        revealNoticeRect.set(left, top, right, bottom);
+
+        RectF rect = new RectF(revealNoticeRect);
+        canvas.drawRect(0, 0, getBoardRight(), getHeight(), dimPaint);
+        canvas.drawRoundRect(new RectF(left - 10, top - 10, right + 10, bottom + 10), 24f, 24f, dimPaint);
+        canvas.drawRoundRect(rect, 18f, 18f, overlayPaint);
+        canvas.drawRoundRect(rect, 18f, 18f, buttonBorderPaint);
+
+        canvas.drawText("亮主提示", left + 24, top + 40, bodyPaint);
+        String summary = trimTextToWidth(revealNoticeSummary, panelWidth - 56f);
+        canvas.drawText(summary, left + 24, top + 82, subtleTextPaint);
+        if (!revealNoticeCards.isEmpty()) {
+            String cardsText = "亮牌: " + game.describeCards(revealNoticeCards);
+            canvas.drawText(trimTextToWidth(cardsText, panelWidth - 56f), left + 24, top + 126, hintPaint);
+        } else {
+            canvas.drawText(trimTextToWidth("亮主后会自动继续起底和出牌。", panelWidth - 56f), left + 24, top + 126, hintPaint);
+        }
+        canvas.drawText(trimTextToWidth("点“确定”或“知道了”关闭提示，不影响当前亮主、起底和后续出牌流程。", panelWidth - 56f), left + 24, top + 164, smallPaint);
+        canvas.drawText(trimTextToWidth("这只是一个亮牌提醒，大框只负责提示，不会影响后续自动流程。", panelWidth - 56f), left + 24, top + 196, subtleTextPaint);
+
+        revealNoticeConfirmRect.set(right - 132, bottom - 60, right - 20, bottom - 16);
+        drawTextButton(canvas, revealNoticeConfirmRect, "知道了", buttonPaint);
     }
 
     private void drawHand(Canvas canvas) {
@@ -825,14 +1038,34 @@ public class GameView extends View {
                 "默认主花色",
                 "拖拉机",
                 "历史条数",
-                "提示"
+                "提示",
+                "允许抢亮",
+                "特殊三张甩牌",
+                "4466算拖拉机",
+                "高牌拆分特例",
+                "公开信息半甩",
+                "单王带对反主",
+                "双王抄底反主",
+                "双王反无主",
+                "结算停留",
+                "撤销次数"
         };
         String[] values = {
                 editingRuleConfig.getRankLabel(),
                 editingRuleConfig.getTrumpSuitLabel(),
                 editingRuleConfig.isTractorEnabled() ? "开启" : "关闭",
                 String.valueOf(editingRuleConfig.getHistoryLimit()),
-                editingRuleConfig.isHintEnabled() ? "开启" : "关闭"
+                editingRuleConfig.isHintEnabled() ? "开启" : "关闭",
+                editingRuleConfig.isRevealStealEnabled() ? "开启" : "关闭",
+                editingRuleConfig.isSpecialThreeCardShuaiEnabled() ? "开启" : "关闭",
+                editingRuleConfig.isTractorCarryAceEnabled() ? "开启" : "关闭",
+                editingRuleConfig.isSpecialTopSplitEnabled() ? "开启" : "关闭",
+                editingRuleConfig.isPublicInfoSemiShuaiEnabled() ? "开启" : "关闭",
+                editingRuleConfig.isCounterTrumpSingleJokerPairEnabled() ? "开启" : "关闭",
+                editingRuleConfig.isCounterTrumpDoubleJokerCopyEnabled() ? "开启" : "关闭",
+                editingRuleConfig.isCounterNoTrumpEnabled() ? "开启" : "关闭",
+                editingRuleConfig.getSettlementDelayLabel(),
+                editingRuleConfig.getUndoChancesLabel()
         };
 
         int rowTop = baseY + 22;
@@ -843,8 +1076,59 @@ public class GameView extends View {
         }
         canvas.restore();
         canvas.drawText("保存后只影响下一局，当前牌局继续按本局规则进行。", left + 28, bottom - 110, smallPaint);
-        canvas.drawText("亮主抢庄优先使用手里级牌；若都亮不出，会用这里的默认主花色兜底。", left + 28, bottom - 82, smallPaint);
+        canvas.drawText("后面新增的地方规则会继续收进这里，当前已支持抢亮、公开信息半甩、反主、无主和结算停留。", left + 28, bottom - 82, smallPaint);
         canvas.drawText("该界面支持上下拖动。", left + 28, bottom - 54, smallPaint);
+    }
+
+    private void drawRestartConfirmOverlay(Canvas canvas) {
+        canvas.drawRect(0, 0, getWidth(), getHeight(), dimPaint);
+        int left = getWidth() / 5;
+        int top = getHeight() / 4;
+        int right = getWidth() - left;
+        int bottom = getHeight() - top;
+        drawOverlayPanel(canvas, left, top, right, bottom, "确认重选");
+
+        overlayCancelRect.set(left + 36, bottom - 84, left + 180, bottom - 24);
+        overlaySaveRect.set(right - 180, bottom - 84, right - 36, bottom - 24);
+        drawTextButton(canvas, overlayCancelRect, "取消", buttonAltPaint);
+        drawTextButton(canvas, overlaySaveRect, "确定", buttonPaint);
+
+        canvas.drawText("确定后会立即重新洗牌并开始新一局。", left + 34, top + 116, bodyPaint);
+        canvas.drawText("当前这局的进度会直接丢失。", left + 34, top + 156, smallPaint);
+    }
+
+    private void drawSettlementOverlay(Canvas canvas) {
+        canvas.drawRect(0, 0, getWidth(), getHeight(), dimPaint);
+        int left = getWidth() / 7;
+        int top = getHeight() / 8;
+        int right = getWidth() - left;
+        int bottom = getHeight() - top;
+        drawOverlayPanel(canvas, left, top, right, bottom, "本局结算");
+
+        overlayCloseRect.set(right - 150, top + 18, right - 24, top + 68);
+        drawTextButton(canvas, overlayCloseRect, "继续", buttonPaint);
+
+        int lineY = top + 112;
+        canvas.drawText(trimTextToWidth(game.getRoundSettlementSummary(), right - left - 56f), left + 28, lineY, smallPaint);
+        lineY += 40;
+
+        String kittyLabel = "底牌: " + game.describeCards(game.getKitty());
+        canvas.drawText(trimTextToWidth(kittyLabel, right - left - 56f), left + 28, lineY, smallPaint);
+        lineY += 40;
+
+        String calcText = buildSettlementCalcText();
+        canvas.drawText(trimTextToWidth(calcText, right - left - 56f), left + 28, lineY, bodyPaint);
+        lineY += 44;
+
+        String scoreText = "闲家最终抓分: " + game.getNonDealerScore()
+                + "    " + game.getNextDealerLabel();
+        canvas.drawText(trimTextToWidth(scoreText, right - left - 56f), left + 28, lineY, smallPaint);
+        lineY += 40;
+
+        String hint = pendingRuleConfig.getSettlementDelaySeconds() > 0
+                ? "结算会按设置停留后自动进入下一局，也可以点“继续”马上开始。"
+                : "当前设置为手动停留，点“继续”后再进入下一局。";
+        canvas.drawText(trimTextToWidth(hint, right - left - 56f), left + 28, bottom - 36, subtleTextPaint);
     }
 
     private void drawSettingRow(Canvas canvas, Rect rect, String label, String value) {
@@ -859,6 +1143,20 @@ public class GameView extends View {
         RectF rect = new RectF(left, top, right, bottom);
         canvas.drawRoundRect(rect, 16f, 16f, panelPaint);
         canvas.drawRoundRect(rect, 16f, 16f, buttonBorderPaint);
+    }
+
+    private String buildSettlementCalcText() {
+        int basePoints = game.getKittyBasePoints();
+        int multiplier = game.getKittyMultiplier();
+        int bonusPoints = game.getKittyBonusPoints();
+        String typeLabel = game.getKittyWinTypeLabel();
+        if (bonusPoints <= 0) {
+            return typeLabel.length() == 0
+                    ? "本局无额外扣底分。"
+                    : typeLabel + "，底牌 " + basePoints + " 分，本次未追加。";
+        }
+        return typeLabel + "，底牌 " + basePoints + " 分，"
+                + basePoints + " × " + multiplier + " = " + bonusPoints + " 分。";
     }
 
     private void drawOverlayPanel(Canvas canvas, int left, int top, int right, int bottom, String title) {
@@ -1006,7 +1304,7 @@ public class GameView extends View {
     }
 
     private float clampSettingsScroll(float offset) {
-        float contentHeight = 5 * 76f + 150f;
+        float contentHeight = SETTING_ROW_COUNT * 76f + 150f;
         float visibleHeight = getHeight() - (getHeight() / 8f) * 2f - 200f;
         float minOffset = Math.min(0f, visibleHeight - contentHeight);
         if (offset < minOffset) {
@@ -1060,7 +1358,7 @@ public class GameView extends View {
             if (game.getPhase() == GamePhase.BURY_KITTY && game.isHumanDealerBuryPhase()) {
                 selectionFeedbackMessage = "请选 8 张底牌后点击“放底牌”。";
             } else if (game.getPhase() == GamePhase.REVEAL_TRUMP && game.canHumanUsePrimaryAction()) {
-                selectionFeedbackMessage = "你可以点击“亮主”抢庄。";
+                selectionFeedbackMessage = "你可以点击“我亮”抢庄。";
             } else {
                 selectionFeedbackMessage = "";
             }
@@ -1118,12 +1416,43 @@ public class GameView extends View {
         playButtonRect.set(buttonLeft, currentTop, buttonLeft + buttonWidth, currentTop + playHeight);
         currentTop += playHeight + 18;
         restartButtonRect.set(buttonLeft, currentTop, buttonLeft + buttonWidth, currentTop + restartHeight);
+        currentTop += restartHeight + 16;
+        undoButtonRect.set(buttonLeft, currentTop, buttonLeft + buttonWidth, currentTop + 58);
 
         drawCircleButton(canvas, menuButtonRect, toolMenuExpanded ? "收" : "工");
         canvas.drawBitmap(playButtonBitmap, null, playButtonRect, null);
         canvas.drawBitmap(restartButtonBitmap, null, restartButtonRect, null);
-        float primaryWidth = titlePaint.measureText(game.getPrimaryActionText());
-        canvas.drawText(game.getPrimaryActionText(), playButtonRect.centerX() - primaryWidth / 2f, playButtonRect.centerY() + 12, titlePaint);
+        drawTextButton(canvas, undoButtonRect, "撤销(" + game.getHumanUndoRemaining() + ")", game.canUndoHumanMove() ? buttonAltPaint : panelPaint);
+        if (game.getPhase() == GamePhase.REVEAL_TRUMP) {
+            Paint revealBorderPaint = new Paint(buttonBorderPaint);
+            revealBorderPaint.setColor(Color.argb(235, 255, 112, 72));
+            revealBorderPaint.setStrokeWidth(5f);
+            canvas.drawRoundRect(new RectF(playButtonRect), 18f, 18f, revealBorderPaint);
+        } else if (game.getPhase() == GamePhase.BURY_KITTY) {
+            Paint buryBorderPaint = new Paint(buttonBorderPaint);
+            buryBorderPaint.setColor(Color.argb(235, 86, 186, 255));
+            buryBorderPaint.setStrokeWidth(5f);
+            canvas.drawRoundRect(new RectF(playButtonRect), 18f, 18f, buryBorderPaint);
+        }
+        Paint primaryPaint;
+        if ("抄底".equals(game.getPrimaryActionText()) || "反主".equals(game.getPrimaryActionText())) {
+            primaryPaint = new Paint(hintPaint);
+            primaryPaint.setColor(Color.rgb(255, 230, 140));
+            primaryPaint.setTextSize(38f);
+        } else if (game.getPhase() == GamePhase.BURY_KITTY) {
+            primaryPaint = new Paint(titlePaint);
+            primaryPaint.setColor(Color.rgb(210, 244, 255));
+            primaryPaint.setTextSize(34f);
+        } else if (game.getPhase() == GamePhase.REVEAL_TRUMP) {
+            primaryPaint = new Paint(hintPaint);
+            primaryPaint.setTextSize(36f);
+        } else {
+            primaryPaint = new Paint(titlePaint);
+            primaryPaint.setColor(Color.rgb(86, 45, 8));
+            primaryPaint.setTextSize(38f);
+        }
+        float primaryWidth = primaryPaint.measureText(game.getPrimaryActionText());
+        canvas.drawText(game.getPrimaryActionText(), playButtonRect.centerX() - primaryWidth / 2f, playButtonRect.centerY() + 12, primaryPaint);
         float restartWidth = bodyPaint.measureText("重开");
         canvas.drawText("重开", restartButtonRect.centerX() - restartWidth / 2f, restartButtonRect.centerY() + 10, bodyPaint);
         canvas.drawText("操作区", buttonLeft, bottom - 44, subtleTextPaint);
@@ -1173,6 +1502,38 @@ public class GameView extends View {
         setSelectionFeedback(suggestion.message, false);
     }
 
+    private void handleSettlementTouch(MotionEvent event) {
+        if (event.getAction() != MotionEvent.ACTION_UP) {
+            return;
+        }
+        performClick();
+        removeCallbacks(dismissSettlementRunnable);
+        if (overlayCloseRect.contains((int) event.getX(), (int) event.getY()) || !insideOverlayPanel((int) event.getX(), (int) event.getY())) {
+            showSettlementPanel = false;
+            invalidate();
+            postDelayed(nextRoundRunnable, 700);
+        }
+    }
+
+    private void handleRestartConfirmTouch(MotionEvent event) {
+        if (event.getAction() != MotionEvent.ACTION_UP) {
+            return;
+        }
+        performClick();
+        int x = (int) event.getX();
+        int y = (int) event.getY();
+        if (overlaySaveRect.contains(x, y)) {
+            showRestartConfirmPanel = false;
+            restartGame();
+            return;
+        }
+        if (overlayCancelRect.contains(x, y) || !insideOverlayPanel(x, y)) {
+            showRestartConfirmPanel = false;
+            invalidate();
+            scheduleNextAction();
+        }
+    }
+
     private String getPhaseTitle() {
         if (game.getPhase() == GamePhase.REVEAL_TRUMP) {
             return "当前阶段：抢庄亮主";
@@ -1188,7 +1549,9 @@ public class GameView extends View {
 
     private String getPhaseDetailText() {
         if (game.getPhase() == GamePhase.REVEAL_TRUMP) {
-            return "谁先亮出当前级牌谁就是庄家；下一局由优先方先亮，亮不起来再轮到另一方。";
+            return game.canHumanUsePrimaryAction()
+                    ? "你现在可以点“我亮”抢主；如果先不亮，系统稍后会自动判定更合适的亮主方。"
+                    : "系统正在按双方牌力自动判断谁来亮主，亮牌后会马上继续起底。";
         }
         if (game.getPhase() == GamePhase.BURY_KITTY) {
             return game.isHumanDealerBuryPhase()
@@ -1199,5 +1562,21 @@ public class GameView extends View {
             return "系统会在短暂停留后自动进入下一局，你也可以先看一下本局结算和升降级。";
         }
         return "支持单张、对子、拖拉机和严格跟牌，已出牌记录可在上方按钮里滚动查看。";
+    }
+
+    private void syncRevealNoticeFromGame() {
+        String summary = game.getLastRevealSummary();
+        if (summary == null || summary.length() == 0) {
+            showRevealNotice = false;
+            revealNoticeSummary = "";
+            revealNoticeCards.clear();
+            return;
+        }
+        if (!summary.equals(revealNoticeSummary)) {
+            revealNoticeSummary = summary;
+            revealNoticeCards.clear();
+            revealNoticeCards.addAll(game.getLastRevealCards());
+            showRevealNotice = true;
+        }
     }
 }
